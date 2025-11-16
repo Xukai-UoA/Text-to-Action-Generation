@@ -121,6 +121,9 @@ class GANModel(nn.Module):
         self.discriminator_attention_size = dim_char_enc
         self.discriminator_decoder = AttentionDecoder(dim_dis, self.discriminator_attention_size)
 
+        # Discriminator的输入转换层（将action转换到dim_dis维度）
+        self.discriminator_W_in = nn.Linear(self.dim_action, dim_dis)
+
         # Discriminator的最后输出层
         self.discriminator_W_out = nn.Linear(dim_dis, 1)
 
@@ -244,6 +247,13 @@ class GANModel(nn.Module):
         else:
             action_list = action_seq
 
+        # 关键修复：将action转换到dim_dis维度
+        # 这对应TensorFlow版本中decoder_inputs的预期维度
+        action_list_transformed = []
+        for action in action_list:
+            action_transformed = self.discriminator_W_in(action)
+            action_list_transformed.append(action_transformed)
+
         # 准备attention states (只使用char_seq)
         attn_states = char_seq
 
@@ -253,7 +263,7 @@ class GANModel(nn.Module):
 
         # 运行attention decoder (没有loop function)
         outputs, _ = self.discriminator_decoder(
-            action_list, (h_0, c_0), attn_states, loop_function=None
+            action_list_transformed, (h_0, c_0), attn_states, loop_function=None
         )
 
         # 取最后一个输出，通过全连接层和sigmoid
@@ -341,3 +351,6 @@ if __name__ == "__main__":
     print(f"\n维度信息:")
     print(f"   char2action attention_size: {model.char2action_attention_size}")
     print(f"   discriminator attention_size: {model.discriminator_attention_size}")
+    print(f"\n预期的LSTM输入维度:")
+    print(f"   Generator LSTM input: decoder_input({model.dim_gen}) + context({model.char2action_attention_size}) = {model.dim_gen + model.char2action_attention_size}")
+    print(f"   Discriminator LSTM input: decoder_input({model.dim_dis}) + context({model.discriminator_attention_size}) = {model.dim_dis + model.discriminator_attention_size}")
