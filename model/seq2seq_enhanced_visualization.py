@@ -4,6 +4,10 @@
 1. 头部关键点使用红色
 2. 胳膊和手部关键点使用绿色
 3. 颈部关键点使用蓝色（作为基准点）
+4. 自动对齐骨架到标准视角（头部在上，躯干居中，正面展示）
+   - 智能检测头部-颈部方向确定"上"方向
+   - 根据左右肩膀位置确定"左右"方向
+   - 自动构建标准坐标系，确保每个动作都以一致的正面视角展示
 """
 
 import numpy as np
@@ -116,10 +120,92 @@ def pose_to_joint_positions(pose_vector):
     return np.array(joint_positions)
 
 
+def align_skeleton_to_standard_view(joint_positions):
+    """
+    自动对齐骨架到标准视角坐标系
+
+    标准视角定义：
+    - Z轴向上（头部在颈部上方）
+    - Y轴向前（身体正面朝向观察者）
+    - X轴向右（左臂在左侧，右臂在右侧）
+    - 颈部位于坐标系中心
+
+    Args:
+        joint_positions: [8, 3] - 8个关节的3D坐标
+            0: 颈部, 1: 左肩, 2: 右肩, 3-6: 肘部和手腕, 7: 头部
+
+    Returns:
+        aligned_positions: [8, 3] - 对齐后的关节坐标
+    """
+    # 提取关键关节
+    neck = joint_positions[0]       # 颈部
+    left_shoulder = joint_positions[1]   # 左肩
+    right_shoulder = joint_positions[2]  # 右肩
+    head = joint_positions[7]       # 头部
+
+    # 1. 计算"上"方向 (Z轴)：从颈部指向头部
+    up_vec = head - neck
+    up_norm = np.linalg.norm(up_vec)
+    if up_norm < 1e-6:
+        # 如果头部和颈部重合，使用默认向上方向
+        up_vec = np.array([0, 0, 1])
+    else:
+        up_vec = up_vec / up_norm
+
+    # 2. 计算"右"方向 (X轴)：从左肩指向右肩
+    right_vec = right_shoulder - left_shoulder
+    right_norm = np.linalg.norm(right_vec)
+    if right_norm < 1e-6:
+        # 如果左右肩重合，使用默认右方向
+        right_vec = np.array([1, 0, 0])
+    else:
+        right_vec = right_vec / right_norm
+
+    # 3. 计算"前"方向 (Y轴)：右向量 × 上向量
+    # 右手坐标系：right × up = forward
+    forward_vec = np.cross(right_vec, up_vec)
+    forward_norm = np.linalg.norm(forward_vec)
+    if forward_norm < 1e-6:
+        # 如果向量平行，重新计算
+        forward_vec = np.array([0, 1, 0])
+    else:
+        forward_vec = forward_vec / forward_norm
+
+    # 4. 重新正交化：确保三个轴互相垂直
+    # 固定Z轴(up)，重新计算X轴
+    right_vec = np.cross(forward_vec, up_vec)
+    right_vec = right_vec / np.linalg.norm(right_vec)
+
+    # 再次计算Y轴以确保完全正交
+    forward_vec = np.cross(right_vec, up_vec)
+    forward_vec = forward_vec / np.linalg.norm(forward_vec)
+
+    # 5. 构建旋转矩阵
+    # 目标坐标系：X轴=[1,0,0], Y轴=[0,1,0], Z轴=[0,0,1]
+    # 当前坐标系：X轴=right_vec, Y轴=forward_vec, Z轴=up_vec
+    # 旋转矩阵R: 将当前坐标系转换到目标坐标系
+    rotation_matrix = np.column_stack([right_vec, forward_vec, up_vec])
+
+    # 6. 对所有关节进行变换
+    aligned_positions = np.zeros_like(joint_positions)
+    for i in range(len(joint_positions)):
+        # 先平移：将颈部移到原点
+        centered = joint_positions[i] - neck
+        # 再旋转：对齐到标准坐标系
+        aligned_positions[i] = rotation_matrix.T @ centered
+
+    return aligned_positions
+
+
 # ==================== 8关键帧可视化 ====================
 def visualize_key_frames(action_seq, title="Generated Action", save_path=None, num_frames=8):
     """
-    可视化动作序列的关键帧（彩色版）
+    可视化动作序列的关键帧（彩色版，自动对齐视角）
+
+    该函数会自动将骨架对齐到标准视角：
+    - Z轴向上（头部在颈部上方）
+    - Y轴向前（身体正面朝向观察者）
+    - X轴向右（左臂在左侧，右臂在右侧）
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -141,11 +227,13 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
     joint_colors = get_joint_colors()
     connection_colors = get_connection_colors()
 
-    # 计算全局坐标范围
+    # 计算全局坐标范围（对齐后）
     all_positions = []
     for frame_idx in frame_indices:
         pose = action_seq[:, frame_idx]
         positions = pose_to_joint_positions(pose)
+        # 自动对齐到标准视角
+        positions = align_skeleton_to_standard_view(positions)
         all_positions.append(positions)
 
     all_positions = np.concatenate(all_positions, axis=0)
@@ -159,6 +247,8 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
 
         pose = action_seq[:, frame_idx]
         joint_positions = pose_to_joint_positions(pose)
+        # 自动对齐到标准视角
+        joint_positions = align_skeleton_to_standard_view(joint_positions)
 
         # 绘制关节点（按颜色分组）
         for joint_idx in range(len(joint_positions)):
@@ -188,7 +278,8 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
         ax.set_xlim(x_range)
         ax.set_ylim(y_range)
         ax.set_zlim(z_range)
-        ax.view_init(elev=20, azim=45)
+        # 正面视角：elev=10(稍微从上往下看), azim=0(正面)
+        ax.view_init(elev=10, azim=0)
         ax.grid(True, alpha=0.3)
 
     fig.suptitle(title, fontsize=16, fontweight='bold')
@@ -214,7 +305,12 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
 # ==================== 32帧完整动画 ====================
 def visualize_full_animation(action_seq, title="Generated Action", save_path=None):
     """
-    生成32帧完整动作动画（彩色版）
+    生成32帧完整动作动画（彩色版，自动对齐视角）
+
+    该函数会自动将骨架对齐到标准视角：
+    - Z轴向上（头部在颈部上方）
+    - Y轴向前（身体正面朝向观察者）
+    - X轴向右（左臂在左侧，右臂在右侧）
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -233,11 +329,13 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
     joint_colors = get_joint_colors()
     connection_colors = get_connection_colors()
 
-    # 计算全局坐标范围
+    # 计算全局坐标范围（对齐后）
     all_positions = []
     for t in range(action_steps):
         pose = action_seq[:, t]
         positions = pose_to_joint_positions(pose)
+        # 自动对齐到标准视角
+        positions = align_skeleton_to_standard_view(positions)
         all_positions.append(positions)
 
     all_positions = np.concatenate(all_positions, axis=0)
@@ -266,7 +364,8 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
     ax.set_xlabel('X', fontsize=12, fontweight='bold')
     ax.set_ylabel('Y', fontsize=12, fontweight='bold')
     ax.set_zlabel('Z', fontsize=12, fontweight='bold')
-    ax.view_init(elev=20, azim=45)
+    # 正面视角：elev=10(稍微从上往下看), azim=0(正面)
+    ax.view_init(elev=10, azim=0)
     ax.grid(True, alpha=0.3)
 
     # 添加图例
@@ -296,6 +395,8 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
         """更新函数"""
         pose = action_seq[:, frame]
         joint_positions = pose_to_joint_positions(pose)
+        # 自动对齐到标准视角
+        joint_positions = align_skeleton_to_standard_view(joint_positions)
 
         # 更新每个关节点
         for joint_idx, scatter in enumerate(scatters):
@@ -338,7 +439,12 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
 # ==================== 32帧网格图 ====================
 def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
     """
-    在一张大图中显示所有32帧（彩色版）
+    在一张大图中显示所有32帧（彩色版，自动对齐视角）
+
+    该函数会自动将骨架对齐到标准视角：
+    - Z轴向上（头部在颈部上方）
+    - Y轴向前（身体正面朝向观察者）
+    - X轴向右（左臂在左侧，右臂在右侧）
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -358,11 +464,13 @@ def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
     joint_colors = get_joint_colors()
     connection_colors = get_connection_colors()
 
-    # 计算全局坐标范围
+    # 计算全局坐标范围（对齐后）
     all_positions = []
     for t in range(action_steps):
         pose = action_seq[:, t]
         positions = pose_to_joint_positions(pose)
+        # 自动对齐到标准视角
+        positions = align_skeleton_to_standard_view(positions)
         all_positions.append(positions)
 
     all_positions = np.concatenate(all_positions, axis=0)
@@ -376,6 +484,8 @@ def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
 
         pose = action_seq[:, frame_idx]
         joint_positions = pose_to_joint_positions(pose)
+        # 自动对齐到标准视角
+        joint_positions = align_skeleton_to_standard_view(joint_positions)
 
         # 绘制关节（按颜色）
         for joint_idx in range(len(joint_positions)):
@@ -398,7 +508,8 @@ def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
         ax.set_ylim(y_range)
         ax.set_zlim(z_range)
         ax.set_title(f'F{frame_idx}', fontsize=8)
-        ax.view_init(elev=20, azim=45)
+        # 正面视角：elev=10(稍微从上往下看), azim=0(正面)
+        ax.view_init(elev=10, azim=0)
 
         ax.set_xticks([])
         ax.set_yticks([])
