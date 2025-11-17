@@ -11,6 +11,10 @@
    - 根据左右肩膀位置确定"左右"方向
    - 头部和手臂相对于稳定的肩膀平面移动
    - 自动构建标准坐标系，确保每个动作都以一致的正面视角展示
+5. 智能比例调整（修正数据集问题）
+   - 自动缩小颈部到肩膀的距离（默认缩小到50%）
+   - 保持头部和颈部的相对位置不变
+   - 让人物比例更自然，更易于观察
 """
 
 import numpy as np
@@ -123,7 +127,7 @@ def pose_to_joint_positions(pose_vector):
     return np.array(joint_positions)
 
 
-def align_skeleton_to_standard_view(joint_positions):
+def align_skeleton_to_standard_view(joint_positions, neck_shoulder_scale=0.5):
     """
     自动对齐骨架到标准视角坐标系（躯干稳定版）
 
@@ -140,6 +144,8 @@ def align_skeleton_to_standard_view(joint_positions):
     Args:
         joint_positions: [8, 3] - 8个关节的3D坐标
             0: 颈部, 1: 左肩, 2: 右肩, 3-6: 肘部和手腕, 7: 头部
+        neck_shoulder_scale: float - 颈部到肩膀平面距离的缩放系数 (默认0.5，即缩小到50%)
+            用于修正数据集中颈部与肩膀距离过大的问题
 
     Returns:
         aligned_positions: [8, 3] - 对齐后的关节坐标
@@ -208,13 +214,29 @@ def align_skeleton_to_standard_view(joint_positions):
         # 再旋转：对齐到标准坐标系
         aligned_positions[i] = rotation_matrix.T @ centered
 
+    # 8. 缩小颈部到肩膀的距离（可选，用于修正数据集问题）
+    if neck_shoulder_scale != 1.0:
+        # 肩膀中点在原点，计算颈部位置
+        aligned_neck = aligned_positions[0]
+        aligned_head = aligned_positions[7]
+
+        # 计算头部相对于颈部的向量（保持头颈相对位置不变）
+        head_neck_vec = aligned_head - aligned_neck
+
+        # 将颈部向肩膀平面（原点）拉近
+        scaled_neck = aligned_neck * neck_shoulder_scale
+
+        # 更新颈部和头部位置（保持头颈相对关系）
+        aligned_positions[0] = scaled_neck  # 颈部
+        aligned_positions[7] = scaled_neck + head_neck_vec  # 头部（相对位置不变）
+
     return aligned_positions
 
 
 # ==================== 8关键帧可视化 ====================
 def visualize_key_frames(action_seq, title="Generated Action", save_path=None, num_frames=8):
     """
-    可视化动作序列的关键帧（彩色版，自动对齐视角）
+    可视化动作序列的关键帧（彩色版，自动对齐视角，智能比例调整）
 
     该函数会自动将骨架对齐到标准视角（符合人体运动学）：
     - 躯干中心（肩膀中点）固定在原点
@@ -223,6 +245,7 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
     - 头部和手臂相对于稳定的肩膀平面移动
+    - 自动缩小颈部到肩膀的距离（50%），修正数据集比例问题
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -322,7 +345,7 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
 # ==================== 32帧完整动画 ====================
 def visualize_full_animation(action_seq, title="Generated Action", save_path=None):
     """
-    生成32帧完整动作动画（彩色版，自动对齐视角）
+    生成32帧完整动作动画（彩色版，自动对齐视角，智能比例调整）
 
     该函数会自动将骨架对齐到标准视角（符合人体运动学）：
     - 躯干中心（肩膀中点）固定在原点
@@ -331,6 +354,7 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
     - 头部和手臂相对于稳定的肩膀平面移动
+    - 自动缩小颈部到肩膀的距离（50%），修正数据集比例问题
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -459,7 +483,7 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
 # ==================== 32帧网格图 ====================
 def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
     """
-    在一张大图中显示所有32帧（彩色版，自动对齐视角）
+    在一张大图中显示所有32帧（彩色版，自动对齐视角，智能比例调整）
 
     该函数会自动将骨架对齐到标准视角（符合人体运动学）：
     - 躯干中心（肩膀中点）固定在原点
@@ -468,6 +492,7 @@ def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
     - 头部和手臂相对于稳定的肩膀平面移动
+    - 自动缩小颈部到肩膀的距离（50%），修正数据集比例问题
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
