@@ -46,7 +46,7 @@ class DatasetChecker:
         os.makedirs(output_dir, exist_ok=True)
 
         # 获取所有pose文件
-        self.pose_files = sorted(glob.glob(os.path.join(pose_dir, 'pose_*.mat')))
+        self.pose_files = sorted(glob.glob(os.path.join(pose_dir, 'data_*.mat')))
         print(f"✓ 找到 {len(self.pose_files)} 个pose文件")
 
         # 获取所有script文件
@@ -127,7 +127,7 @@ class DatasetChecker:
         print(f"{'='*70}")
 
         # 查找对应的文件
-        pose_file = os.path.join(self.pose_dir, f'pose_{sample_id}.mat')
+        pose_file = os.path.join(self.pose_dir, f'data_{sample_id}.mat')
         script_file = os.path.join(self.script_dir, f'script_{sample_id}.txt')
 
         # 检查文件是否存在
