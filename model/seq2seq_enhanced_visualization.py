@@ -188,7 +188,8 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
         ax.set_xlim(x_range)
         ax.set_ylim(y_range)
         ax.set_zlim(z_range)
-        ax.view_init(elev=20, azim=45)
+        # 正面视角：elev=10(稍微从上往下看), azim=0(正面)
+        ax.view_init(elev=10, azim=0)
         ax.grid(True, alpha=0.3)
 
     fig.suptitle(title, fontsize=16, fontweight='bold')
@@ -266,7 +267,8 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
     ax.set_xlabel('X', fontsize=12, fontweight='bold')
     ax.set_ylabel('Y', fontsize=12, fontweight='bold')
     ax.set_zlabel('Z', fontsize=12, fontweight='bold')
-    ax.view_init(elev=20, azim=45)
+    # 正面视角：elev=10(稍微从上往下看), azim=0(正面)
+    ax.view_init(elev=10, azim=0)
     ax.grid(True, alpha=0.3)
 
     # 添加图例
@@ -398,7 +400,8 @@ def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
         ax.set_ylim(y_range)
         ax.set_zlim(z_range)
         ax.set_title(f'F{frame_idx}', fontsize=8)
-        ax.view_init(elev=20, azim=45)
+        # 正面视角：elev=10(稍微从上往下看), azim=0(正面)
+        ax.view_init(elev=10, azim=0)
 
         ax.set_xticks([])
         ax.set_yticks([])
