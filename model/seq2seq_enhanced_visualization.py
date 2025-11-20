@@ -4,10 +4,17 @@
 1. 头部关键点使用红色
 2. 胳膊和手部关键点使用绿色
 3. 颈部关键点使用蓝色（作为基准点）
-4. 自动对齐骨架到标准视角（头部在上，躯干居中，正面展示）
+4. 自动对齐骨架到标准视角（符合人体运动学）
+   - 躯干稳定：以肩膀中点作为稳定基准（模拟人体运动中的躯干稳定性）
+   - 肩膀连线保持水平（符合日常生活中肩膀基本同高的特点）
    - 智能检测头部-颈部方向确定"上"方向
    - 根据左右肩膀位置确定"左右"方向
+   - 头部和手臂相对于稳定的肩膀平面移动
    - 自动构建标准坐标系，确保每个动作都以一致的正面视角展示
+5. 智能比例调整（修正数据集问题）
+   - 自动缩小颈部到肩膀的距离（默认缩小到50%）
+   - 保持头部和颈部的相对位置不变
+   - 让人物比例更自然，更易于观察
 """
 
 import numpy as np
@@ -120,19 +127,25 @@ def pose_to_joint_positions(pose_vector):
     return np.array(joint_positions)
 
 
-def align_skeleton_to_standard_view(joint_positions):
+def align_skeleton_to_standard_view(joint_positions, neck_shoulder_scale=0.5):
     """
-    自动对齐骨架到标准视角坐标系
+    自动对齐骨架到标准视角坐标系（躯干稳定版）
 
-    标准视角定义：
+    标准视角定义（符合人体运动学）：
+    - 躯干中心（肩膀中点）位于坐标系原点
+    - 肩膀连线保持水平（在XY平面上）
     - Z轴向上（头部在颈部上方）
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
-    - 颈部位于坐标系中心
+
+    这样可以让肩膀平面保持稳定（因为肩膀连接在躯干上），
+    而头部和手臂相对于躯干移动，更符合日常生活中的人体运动。
 
     Args:
         joint_positions: [8, 3] - 8个关节的3D坐标
             0: 颈部, 1: 左肩, 2: 右肩, 3-6: 肘部和手腕, 7: 头部
+        neck_shoulder_scale: float - 颈部到肩膀平面距离的缩放系数 (默认0.5，即缩小到50%)
+            用于修正数据集中颈部与肩膀距离过大的问题
 
     Returns:
         aligned_positions: [8, 3] - 对齐后的关节坐标
@@ -143,16 +156,12 @@ def align_skeleton_to_standard_view(joint_positions):
     right_shoulder = joint_positions[2]  # 右肩
     head = joint_positions[7]       # 头部
 
-    # 1. 计算"上"方向 (Z轴)：从颈部指向头部
-    up_vec = head - neck
-    up_norm = np.linalg.norm(up_vec)
-    if up_norm < 1e-6:
-        # 如果头部和颈部重合，使用默认向上方向
-        up_vec = np.array([0, 0, 1])
-    else:
-        up_vec = up_vec / up_norm
+    # 1. 计算躯干中心：肩膀连线的中点
+    # 这将作为稳定的基准点（在人体运动中，肩膀平面相对稳定）
+    torso_center = (left_shoulder + right_shoulder) / 2.0
 
-    # 2. 计算"右"方向 (X轴)：从左肩指向右肩
+    # 2. 计算"右"方向 (X轴)：从左肩指向右肩（肩膀连线方向）
+    # 优先使用肩膀方向，因为肩膀连线应该保持水平
     right_vec = right_shoulder - left_shoulder
     right_norm = np.linalg.norm(right_vec)
     if right_norm < 1e-6:
@@ -161,7 +170,16 @@ def align_skeleton_to_standard_view(joint_positions):
     else:
         right_vec = right_vec / right_norm
 
-    # 3. 计算"前"方向 (Y轴)：右向量 × 上向量
+    # 3. 计算"上"方向 (Z轴)：从颈部指向头部
+    up_vec = head - neck
+    up_norm = np.linalg.norm(up_vec)
+    if up_norm < 1e-6:
+        # 如果头部和颈部重合，使用默认向上方向
+        up_vec = np.array([0, 0, 1])
+    else:
+        up_vec = up_vec / up_norm
+
+    # 4. 计算"前"方向 (Y轴)：右向量 × 上向量
     # 右手坐标系：right × up = forward
     forward_vec = np.cross(right_vec, up_vec)
     forward_norm = np.linalg.norm(forward_vec)
@@ -171,28 +189,46 @@ def align_skeleton_to_standard_view(joint_positions):
     else:
         forward_vec = forward_vec / forward_norm
 
-    # 4. 重新正交化：确保三个轴互相垂直
-    # 固定Z轴(up)，重新计算X轴
-    right_vec = np.cross(forward_vec, up_vec)
-    right_vec = right_vec / np.linalg.norm(right_vec)
-
-    # 再次计算Y轴以确保完全正交
-    forward_vec = np.cross(right_vec, up_vec)
+    # 5. 重新正交化：确保三个轴互相垂直
+    # 优先保持肩膀连线水平，所以固定X轴(right)
+    # 重新计算Y轴：up × right
+    forward_vec = np.cross(up_vec, right_vec)
     forward_vec = forward_vec / np.linalg.norm(forward_vec)
 
-    # 5. 构建旋转矩阵
+    # 再次计算Z轴以确保完全正交：right × forward
+    up_vec = np.cross(right_vec, forward_vec)
+    up_vec = up_vec / np.linalg.norm(up_vec)
+
+    # 6. 构建旋转矩阵
     # 目标坐标系：X轴=[1,0,0], Y轴=[0,1,0], Z轴=[0,0,1]
     # 当前坐标系：X轴=right_vec, Y轴=forward_vec, Z轴=up_vec
     # 旋转矩阵R: 将当前坐标系转换到目标坐标系
     rotation_matrix = np.column_stack([right_vec, forward_vec, up_vec])
 
-    # 6. 对所有关节进行变换
+    # 7. 对所有关节进行变换
     aligned_positions = np.zeros_like(joint_positions)
     for i in range(len(joint_positions)):
-        # 先平移：将颈部移到原点
-        centered = joint_positions[i] - neck
+        # 先平移：将躯干中心（肩膀中点）移到原点
+        # 这样肩膀连线会保持稳定，颈部、头部、手臂相对于肩膀移动
+        centered = joint_positions[i] - torso_center
         # 再旋转：对齐到标准坐标系
         aligned_positions[i] = rotation_matrix.T @ centered
+
+    # 8. 缩小颈部到肩膀的距离（可选，用于修正数据集问题）
+    if neck_shoulder_scale != 1.0:
+        # 肩膀中点在原点，计算颈部位置
+        aligned_neck = aligned_positions[0]
+        aligned_head = aligned_positions[7]
+
+        # 计算头部相对于颈部的向量（保持头颈相对位置不变）
+        head_neck_vec = aligned_head - aligned_neck
+
+        # 将颈部向肩膀平面（原点）拉近
+        scaled_neck = aligned_neck * neck_shoulder_scale
+
+        # 更新颈部和头部位置（保持头颈相对关系）
+        aligned_positions[0] = scaled_neck  # 颈部
+        aligned_positions[7] = scaled_neck + head_neck_vec  # 头部（相对位置不变）
 
     return aligned_positions
 
@@ -200,12 +236,16 @@ def align_skeleton_to_standard_view(joint_positions):
 # ==================== 8关键帧可视化 ====================
 def visualize_key_frames(action_seq, title="Generated Action", save_path=None, num_frames=8):
     """
-    可视化动作序列的关键帧（彩色版，自动对齐视角）
+    可视化动作序列的关键帧（彩色版，自动对齐视角，智能比例调整）
 
-    该函数会自动将骨架对齐到标准视角：
+    该函数会自动将骨架对齐到标准视角（符合人体运动学）：
+    - 躯干中心（肩膀中点）固定在原点
+    - 肩膀连线保持水平
     - Z轴向上（头部在颈部上方）
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
+    - 头部和手臂相对于稳定的肩膀平面移动
+    - 自动缩小颈部到肩膀的距离（50%），修正数据集比例问题
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -305,12 +345,16 @@ def visualize_key_frames(action_seq, title="Generated Action", save_path=None, n
 # ==================== 32帧完整动画 ====================
 def visualize_full_animation(action_seq, title="Generated Action", save_path=None):
     """
-    生成32帧完整动作动画（彩色版，自动对齐视角）
+    生成32帧完整动作动画（彩色版，自动对齐视角，智能比例调整）
 
-    该函数会自动将骨架对齐到标准视角：
+    该函数会自动将骨架对齐到标准视角（符合人体运动学）：
+    - 躯干中心（肩膀中点）固定在原点
+    - 肩膀连线保持水平
     - Z轴向上（头部在颈部上方）
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
+    - 头部和手臂相对于稳定的肩膀平面移动
+    - 自动缩小颈部到肩膀的距离（50%），修正数据集比例问题
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
@@ -439,12 +483,16 @@ def visualize_full_animation(action_seq, title="Generated Action", save_path=Non
 # ==================== 32帧网格图 ====================
 def visualize_all_frames_grid(action_seq, title="All Frames", save_path=None):
     """
-    在一张大图中显示所有32帧（彩色版，自动对齐视角）
+    在一张大图中显示所有32帧（彩色版，自动对齐视角，智能比例调整）
 
-    该函数会自动将骨架对齐到标准视角：
+    该函数会自动将骨架对齐到标准视角（符合人体运动学）：
+    - 躯干中心（肩膀中点）固定在原点
+    - 肩膀连线保持水平
     - Z轴向上（头部在颈部上方）
     - Y轴向前（身体正面朝向观察者）
     - X轴向右（左臂在左侧，右臂在右侧）
+    - 头部和手臂相对于稳定的肩膀平面移动
+    - 自动缩小颈部到肩膀的距离（50%），修正数据集比例问题
 
     Args:
         action_seq: [dim_action, action_steps] 或 [1, dim_action, action_steps]
