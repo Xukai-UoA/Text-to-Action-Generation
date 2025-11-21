@@ -146,6 +146,10 @@ class EnhancedSeq2SeqTrainer:
         self.train_losses = []
         self.epoch_losses = []
 
+        # 最优模型追踪
+        self.best_loss = float('inf')
+        self.best_epoch = 0
+
     def train(self):
         """主训练循环"""
 
@@ -155,7 +159,13 @@ class EnhancedSeq2SeqTrainer:
             self.model.load_state_dict(checkpoint['model_state_dict'])
             if 'optimizer_state_dict' in checkpoint:
                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # 恢复最优loss记录
+            if 'best_loss' in checkpoint:
+                self.best_loss = checkpoint['best_loss']
+                self.best_epoch = checkpoint.get('best_epoch', 0)
             print(f'✓ 从检查点恢复: {self.restore_path}')
+            if self.best_loss < float('inf'):
+                print(f'  当前最优loss: {self.best_loss:.6f} (Epoch {self.best_epoch})')
 
         # 转换numpy数组为torch tensors
         train_script_tensor = torch.FloatTensor(self.train_script).to(self.device)
@@ -269,7 +279,14 @@ class EnhancedSeq2SeqTrainer:
                   f"(Action: {avg_action_loss:.6f}, Char: {avg_char_loss:.6f})")
             print(f"  Teacher forcing ratio: {current_epsilon:.3f}")
 
-            # 保存checkpoint
+            # 检查是否是最优模型
+            is_best = avg_epoch_loss < self.best_loss
+            if is_best:
+                self.best_loss = avg_epoch_loss
+                self.best_epoch = epoch + self.restore_step
+                print(f"  🌟 新的最优模型! Loss: {self.best_loss:.6f}")
+
+            # 保存定期checkpoint
             if (epoch + 1) % self.save_stride == 0:
                 checkpoint_path = os.path.join(
                     self.model_dir,
@@ -280,10 +297,31 @@ class EnhancedSeq2SeqTrainer:
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'loss': avg_epoch_loss,
+                    'action_loss': avg_action_loss,
+                    'char_loss': avg_char_loss,
                     'epsilon': current_epsilon,
+                    'best_loss': self.best_loss,
+                    'best_epoch': self.best_epoch,
                     'train_losses': self.epoch_losses
                 }, checkpoint_path)
-                print(f'  ✓ 模型已保存: {checkpoint_path}')
+                print(f'  ✓ 定期检查点已保存: {checkpoint_path}')
+
+            # 保存最优模型
+            if is_best:
+                best_model_path = os.path.join(self.model_dir, 'best_model.pth')
+                torch.save({
+                    'epoch': epoch + self.restore_step,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'loss': avg_epoch_loss,
+                    'action_loss': avg_action_loss,
+                    'char_loss': avg_char_loss,
+                    'epsilon': current_epsilon,
+                    'best_loss': self.best_loss,
+                    'best_epoch': self.best_epoch,
+                    'train_losses': self.epoch_losses
+                }, best_model_path)
+                print(f'  ✓ 最优模型已保存: {best_model_path}')
 
         print("\n" + "=" * 80)
         print("训练完成!")
@@ -298,6 +336,12 @@ class EnhancedSeq2SeqTrainer:
                  char_losses=[d['char_loss'] for d in self.epoch_losses],
                  epsilons=[d['epsilon'] for d in self.epoch_losses])
         print(f"训练历史已保存: {history_path}")
+
+        # 打印最优模型信息
+        print(f"\n最优模型:")
+        print(f"  Epoch: {self.best_epoch}")
+        print(f"  Loss: {self.best_loss:.6f}")
+        print(f"  保存路径: {os.path.join(self.model_dir, 'best_model.pth')}")
 
 
 if __name__ == "__main__":
