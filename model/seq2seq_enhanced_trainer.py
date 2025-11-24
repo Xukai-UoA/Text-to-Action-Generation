@@ -238,9 +238,10 @@ class EnhancedSeq2SeqTrainer:
                 # 1. 编码文本
                 char_enc_out = self.model.char_encoder(script_batch, length_batch)
 
-                # 2. 从文本生成动作（应用scheduled sampling）
+                # 2. 从文本生成动作（应用真正的teacher forcing）
                 action_gen_out, action_enc_out = self.model.char2action(
                     char_enc_out, curr_action_init, curr_random_c2a, self.batch_size,
+                    ground_truth_actions=action_batch,  # ✅ 传入ground truth
                     teacher_forcing_ratio=current_epsilon
                 )
 

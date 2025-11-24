@@ -158,28 +158,29 @@ output = γ × x_norm + β
 
 #### 应用位置
 
-我们在每层LSTM**之后**应用LayerNorm（而不是LSTM内部）：
+**编码器和解码器的LayerNorm实现不同**：
 
 ```python
-# 编码器
-x = BiLSTM_layer1(x)
-x = LayerNorm(x)        # ← 在这里应用
-x = BiLSTM_layer2(x)
-x = LayerNorm(x)
+# 编码器（使用nn.LSTM，只能在所有层之后应用）
+x = nn.LSTM(x)           # 多层BiLSTM（内部处理）
+x = LayerNorm(x)         # ← 在所有层之后应用一次
+x = output_projection(x)
 
-# 解码器
+# 解码器（手动构建，可以在每层之间应用）
 h = LSTM_layer1(x)
-h = LayerNorm(h)        # ← 在这里应用
+h = LayerNorm(h)         # ← 第1层后应用
 h = LSTM_layer2(h)
-h = LayerNorm(h)
+h = LayerNorm(h)         # ← 第2层后应用
 ```
 
-#### 为什么不在LSTM内部？
+#### 为什么编码器和解码器不同？
 
-| 方案 | 优点 | 缺点 |
-|------|------|------|
-| **LSTM内部** | 理论上更稳定 | 实现复杂，需改写LSTMCell |
-| **LSTM之间**（✅我们的选择） | 简单有效，PyTorch原生支持 | 略微不如内部norm |
+| 组件 | 实现方式 | LayerNorm位置 | 原因 |
+|------|----------|--------------|------|
+| **编码器** | `nn.LSTM` (一体化) | 所有层之后应用一次 | nn.LSTM是黑盒，无法在层间插入操作 |
+| **解码器** | 手动构建层 | 每层之后都应用 | 需要逐步解码，天然支持层间操作 |
+
+**注意**: 这种不对称是PyTorch的限制，不是设计缺陷。理想情况下两者都应该每层都应用，但编码器由于使用nn.LSTM，只能妥协。
 
 #### 效果
 
@@ -192,40 +193,50 @@ h = LayerNorm(h)
 
 ```
 model/seq2seq_enhanced_structure.py
-  ├── MultiLayerLSTMEncoder.layer_norms
-  └── BahdanauAttentionDecoder.layer_norms
+  ├── MultiLayerLSTMEncoder.layer_norm     # 单个LayerNorm（所有层后）
+  └── BahdanauAttentionDecoder.layer_norms # 多个LayerNorm（每层后）
 ```
 
 ---
 
-### 5. Scheduled Sampling
+### 5. Scheduled Sampling with True Teacher Forcing
 
 #### 问题：Exposure Bias
 
-**训练时**：解码器总是接收ground truth输入（teacher forcing）
+**训练时**：解码器使用ground truth作为输入（teacher forcing）
 ```
-Input:  [真实pose_0] → [真实pose_1] → [真实pose_2] → ...
-Output: [预测pose_1]   [预测pose_2]   [预测pose_3]
+t=0: Input[初始pose]    → 预测pose_0
+t=1: Input[真实pose_0]  → 预测pose_1  # ← 使用真实值
+t=2: Input[真实pose_1]  → 预测pose_2  # ← 使用真实值
 ```
 
-**测试时**：解码器接收自己的预测输入（自回归）
+**测试时**：解码器使用自己的预测作为输入（自回归）
 ```
-Input:  [初始pose] → [预测pose_1] → [预测pose_2] → ...
-Output: [预测pose_1] [预测pose_2] [预测pose_3]
+t=0: Input[初始pose]    → 预测pose_0
+t=1: Input[预测pose_0]  → 预测pose_1  # ← 使用预测值
+t=2: Input[预测pose_1]  → 预测pose_2  # ← 使用预测值（错误累积）
 ```
 
 **结果**：训练测试不一致 → 模型对自己的错误缺乏鲁棒性 → 错误累积
 
-#### 解决方案：Scheduled Sampling
+#### 解决方案：Scheduled Sampling（正确实现）
 
-在训练时**随机混合**使用真实输入和模型预测：
+在训练时**随机混合**使用真实ground truth和模型预测：
 
 ```python
-if random.random() < epsilon:
-    decoder_input = ground_truth[t]      # Teacher forcing
-else:
-    decoder_input = model_prediction[t-1]  # 自回归
+# ✅ 正确的实现
+for t in range(action_steps):
+    # 解码当前步
+    action[t] = decoder(input[t])
+
+    # 决定下一步的输入
+    if random.random() < epsilon:
+        input[t+1] = ground_truth[t]      # Teacher forcing（使用真实值）
+    else:
+        input[t+1] = action[t]            # 自回归（使用预测值）
 ```
+
+**关键点**：必须传入`ground_truth_actions`参数才能实现真正的teacher forcing！
 
 #### 课程学习策略（Curriculum Learning）
 
