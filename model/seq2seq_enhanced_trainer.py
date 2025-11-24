@@ -150,6 +150,19 @@ class EnhancedSeq2SeqTrainer:
         self.best_loss = float('inf')
         self.best_epoch = 0
 
+    def _save_training_history(self):
+        """保存训练历史到npz文件"""
+        if len(self.epoch_losses) == 0:
+            return
+
+        history_path = os.path.join(self.model_dir, 'training_history.npz')
+        np.savez(history_path,
+                 epochs=[d['epoch'] for d in self.epoch_losses],
+                 total_losses=[d['total_loss'] for d in self.epoch_losses],
+                 action_losses=[d['action_loss'] for d in self.epoch_losses],
+                 char_losses=[d['char_loss'] for d in self.epoch_losses],
+                 epsilons=[d['epsilon'] for d in self.epoch_losses])
+
     def train(self):
         """主训练循环"""
 
@@ -323,19 +336,17 @@ class EnhancedSeq2SeqTrainer:
                 }, best_model_path)
                 print(f'  ✓ 最优模型已保存: {best_model_path}')
 
+            # 每个epoch后保存训练历史（用于实时监控）
+            self._save_training_history()
+
         print("\n" + "=" * 80)
         print("训练完成!")
         print("=" * 80)
 
-        # 保存训练历史
+        # 最终保存训练历史
+        self._save_training_history()
         history_path = os.path.join(self.model_dir, 'training_history.npz')
-        np.savez(history_path,
-                 epochs=[d['epoch'] for d in self.epoch_losses],
-                 total_losses=[d['total_loss'] for d in self.epoch_losses],
-                 action_losses=[d['action_loss'] for d in self.epoch_losses],
-                 char_losses=[d['char_loss'] for d in self.epoch_losses],
-                 epsilons=[d['epsilon'] for d in self.epoch_losses])
-        print(f"训练历史已保存: {history_path}")
+        print(f"最终训练历史已保存: {history_path}")
 
         # 打印最优模型信息
         print(f"\n最优模型:")
