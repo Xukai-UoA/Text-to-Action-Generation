@@ -254,63 +254,6 @@ class BahdanauAttentionDecoder(nn.Module):
 
         return h, new_hidden_states  # h是最后一层的输出
 
-    def forward(self, inputs, initial_states, encoder_outputs, loop_function=None, teacher_forcing_ratio=1.0):
-        """
-        解码器前向传播
-
-        Args:
-            inputs: list of [batch_size, input_size] tensors
-            initial_states: list of (h_0, c_0) tuples for each layer
-            encoder_outputs: [batch_size, seq_len, encoder_size]
-            loop_function: 将上一步输出转换为下一步输入的函数
-            teacher_forcing_ratio: teacher forcing的概率 (1.0 = 完全使用真实输入)
-
-        Returns:
-            outputs: list of [batch_size, hidden_size] tensors
-            final_states: list of (h, c) tuples for each layer
-        """
-        outputs = []
-        hidden_states = initial_states
-
-        for i in range(len(inputs)):
-            # Scheduled Sampling: 决定使用teacher forcing还是模型预测
-            use_teacher_forcing = random.random() < teacher_forcing_ratio
-
-            if i == 0 or loop_function is None or use_teacher_forcing:
-                # 使用提供的输入（teacher forcing）
-                inp = inputs[i]
-            else:
-                # 使用模型上一步的输出（scheduled sampling）
-                inp = loop_function(outputs[-1], i)
-
-            # 计算attention（使用最后一层的hidden state）
-            context, _ = self.attention(hidden_states[-1][0], encoder_outputs)
-
-            # 拼接输入和context
-            lstm_input = torch.cat([inp, context], dim=1)
-
-            # 通过多层LSTM
-            new_hidden_states = []
-            for layer_idx, lstm_layer in enumerate(self.lstm_layers):
-                if layer_idx == 0:
-                    # 第一层使用拼接后的输入
-                    h, new_state = lstm_layer(lstm_input, hidden_states[layer_idx])
-                else:
-                    # 后续层使用前一层的输出
-                    h, new_state = lstm_layer(prev_h, hidden_states[layer_idx])
-
-                # 应用Layer Normalization
-                if self.use_layer_norm and self.layer_norms is not None:
-                    h = self.layer_norms[layer_idx](h)
-
-                new_hidden_states.append(new_state)
-                prev_h = h
-
-            hidden_states = new_hidden_states
-            outputs.append(h)  # 使用最后一层的输出
-
-        return outputs, hidden_states
-
 
 class EnhancedSeq2SeqModel(nn.Module):
     """
@@ -474,7 +417,7 @@ class EnhancedSeq2SeqModel(nn.Module):
 
     def action2char(self, action_enc, init_input, random_noise, batch_size):
         """
-        从动作编码重建文本序列
+        从动作编码重建文本序列（使用逐步解码，与char2action一致）
 
         Args:
             action_enc: [batch_size, action_steps, dim_gen]
@@ -487,13 +430,7 @@ class EnhancedSeq2SeqModel(nn.Module):
         """
         device = action_enc.device
 
-        # 准备decoder输入
-        dec_input_list = []
-        for _ in range(self.sentence_steps):
-            dec_input = self.action2char_W_in(init_input)
-            dec_input_list.append(dec_input)
-
-        # 拼接action_enc和random noise
+        # 拼接action_enc和random noise作为encoder outputs
         if random_noise.size(-1) > 0:
             actual_action_len = action_enc.size(1)
             if random_noise.size(1) != actual_action_len:
@@ -510,31 +447,34 @@ class EnhancedSeq2SeqModel(nn.Module):
             encoder_outputs = action_enc
 
         # 初始化多层hidden states
-        initial_states = []
+        hidden_states = []
         for _ in range(self.num_decoder_layers):
             h_0 = torch.zeros(batch_size, self.dim_gen, device=device)
             c_0 = torch.zeros(batch_size, self.dim_gen, device=device)
-            initial_states.append((h_0, c_0))
+            hidden_states.append((h_0, c_0))
 
-        # Loop function
-        def loop_fn(prev_output, i):
-            char = self.action2char_W_out(prev_output)
-            next_input = self.action2char_W_in(char)
-            return next_input
-
-        # 运行decoder（action2char不使用scheduled sampling）
-        outputs, _ = self.action2char_decoder(
-            dec_input_list, initial_states, encoder_outputs,
-            loop_function=loop_fn, teacher_forcing_ratio=1.0
-        )
-
-        # 转换为chars
+        # 逐步解码（action2char不需要teacher forcing，总是自回归）
         chars = []
-        for output in outputs:
-            char = self.action2char_W_out(output)
+        current_char = init_input  # 第一步使用初始字符
+
+        for t in range(self.sentence_steps):
+            # 转换当前字符为decoder输入
+            decoder_input = self.action2char_W_in(current_char)
+
+            # 解码一步
+            h, hidden_states = self.action2char_decoder.step(
+                decoder_input, hidden_states, encoder_outputs
+            )
+
+            # 生成字符
+            char = self.action2char_W_out(h)
             chars.append(char)
 
-        chars = torch.stack(chars, dim=1)
+            # 下一步使用当前预测值（完全自回归）
+            if t < self.sentence_steps - 1:
+                current_char = char
+
+        chars = torch.stack(chars, dim=1)  # [batch_size, sentence_steps, dim_sentence]
 
         return chars
 
@@ -618,7 +558,9 @@ if __name__ == "__main__":
     # 2. 生成动作（teacher forcing）
     print("\n[2/4] 生成动作 (teacher_forcing_ratio=1.0)...")
     fake_action_tf, action_enc_tf = model.char2action(
-        char_enc, init_action, random_c2a, batch_size, teacher_forcing_ratio=1.0
+        char_enc, init_action, random_c2a, batch_size,
+        ground_truth_actions=action,
+        teacher_forcing_ratio=1.0
     )
     print(f"  ✓ 生成动作: {fake_action_tf.shape}")
     print(f"  ✓ 动作特征: {action_enc_tf.shape}")
@@ -627,7 +569,9 @@ if __name__ == "__main__":
     # 3. 生成动作（scheduled sampling）
     print("\n[3/4] 生成动作 (teacher_forcing_ratio=0.5)...")
     fake_action_ss, action_enc_ss = model.char2action(
-        char_enc, init_action, random_c2a, batch_size, teacher_forcing_ratio=0.5
+        char_enc, init_action, random_c2a, batch_size,
+        ground_truth_actions=action,
+        teacher_forcing_ratio=0.5
     )
     print(f"  ✓ 生成动作: {fake_action_ss.shape}")
     print(f"  ✓ 两种策略生成的动作差异: {torch.mean(torch.abs(fake_action_tf - fake_action_ss)).item():.6f}")
