@@ -213,8 +213,8 @@ if __name__ == "__main__":
     sentence_steps = 30
     action_steps = 32
     dim_sentence = 300
-    dim_char_enc = 300
-    dim_gen = 300
+    dim_char_enc = 512  # 增强模型使用512（原始模型是300）
+    dim_gen = 512       # 增强模型使用512（原始模型是300）
     dim_random = 10
     num_encoder_layers = 2
     num_decoder_layers = 2
